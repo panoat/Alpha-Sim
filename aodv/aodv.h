@@ -140,7 +140,7 @@ class AODV;
 #define BFV_FAIL                0x0C
 #define BFV_FAULT_PASS          0x0D
 
-//#define TONY_DBG
+#define TONY_DBG
 
 /*
   Timers (Broadcast ID, Hello, Neighbor Cache, Route Cache)
