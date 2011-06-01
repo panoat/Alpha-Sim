@@ -380,9 +380,10 @@ class key_chain {
 public:
     key_chain(){};
 
-    void init_key_chain( int ind, int key ) {
+    void init_key_chain( int ind, int key, int pos ) {
         key_index = ind;
         current_key = key;
+        kc_position = pos;
     }
 
     void advance_key() {
@@ -405,9 +406,14 @@ printf("%08X]\n", current_key);
         return key_index;
     }
 
+    int get_keypos() {
+        return kc_position;
+    }
+
 protected:
-    int key_index;
-    int current_key;
+    int key_index;          // current key index in the chain
+    int current_key;        // the key itself
+    int kc_position;        // key position in the KC pool
     static int salt;
 
     void print() {
@@ -508,7 +514,7 @@ protected:
         key_list.clear();
         for(int i = 0; i < set_num; i++) {
             key_chain tmp;
-            tmp.init_key_chain(0, rand());
+            tmp.init_key_chain(0, rand(), i);
             key_list.push_back(tmp);
         }
     }
@@ -555,7 +561,7 @@ printf("BF add key index %d\n", index);
 
         for( it = chain.begin(); it != chain.end(); it++ ) {
 #ifdef TONY_DBG
-printf("checking key index %4d ---- %08X\n", it->get_index(), it->get_key());
+printf("checking key %4d ---- %08X\n", it->get_keypos(), it->get_key());
 #endif
             if( (it->get_index() > current_index)    // if the key isn't fresh
                  || !check_data(it->get_key()) )   // or key is not valid in BFV
@@ -818,6 +824,9 @@ protected:
 
     // Tony
     int last_uid;                           // last broadcast packet's uid
+    int parent_ip;                          // parent node's ip for broadcast tree
+    static bool bct_mode;                   // broadcast tree mode flag
+
     static key_pool global_key_pool;        // every node share the key pool
     static kchain_pool global_kchain_pool;  // every node share key chain pool
     static bloom_filter global_bf;          // BF to be passed to all nodes

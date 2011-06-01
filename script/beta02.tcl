@@ -24,7 +24,7 @@ set val(ifqlen)	200				; # queue length
 set val(rp)	AODV				; # routing protocol
 set val(en)	EnergyModel/Battery		; # energy model
 set val(n_pas)		1			; # number os access points
-set val(n_common) 	3000			; # number of common nodes
+set val(n_common) 	200			; # number of common nodes
 set val(nn)	[expr $val(n_pas) \
 		+ $val(n_common)]		; # number of nodes
 set val(x)		200.0			; # x lenght of simulation area
@@ -37,7 +37,7 @@ set val(disseminating_type)	2		; # common node disseminating type (ON DEMAND)
 set val(disseminating_interval)	5.0		; # common node disseminating interval
 
 set val(start)			100.0		; # simulation start time
-set val(rep)			30		; # no. of broadcast message sent
+set val(rep)			1		; # no. of broadcast message sent
 set val(interval)		100.0		; # time between each broadcast (sec)
 set val(stop)			[expr $val(start) + $val(rep) * $val(interval) + 1]
 
@@ -48,7 +48,7 @@ set val(access_engy)		100.0		; # access point initial energy
 
 ;#----- Key Pool mode parameters -------------------
 set val(ks_num)			10		; # number of sets in key pool (n)
-set val(fake_ks_num)		1		; # number of fake key set (must be <= n)
+set val(fake_ks_num)		0		; # number of fake key set (must be <= n)
 set val(ks_size)		4		; # number of keys in a set (m)
 set val(lc_ks_size)		2		; # number of keys stored locally (k)
 set val(bf_kps)			2		; # number of key/set to be add to BF (h)
@@ -56,7 +56,7 @@ set val(bf_kps)			2		; # number of key/set to be add to BF (h)
 
 ;#----- Key Chain mode parameters ------------------
 set val(kcs_num)		30		; # number of set in key chain pool (n')
-set val(fake_kcs_num)		3		; # number of fake set in kc pool (<= n')
+set val(fake_kcs_num)		0		; # number of fake set in kc pool (<= n')
 set val(lc_kc_size)		3		; # number of local keys (k)
 ;#--------------------------------------------------
 
@@ -68,7 +68,7 @@ set val(bf_delta)		0		; # BFV bit reducer (<= r)
 ;#		PACKET FORWARDING MODE			#
 ;# $AF_MODE, $FF_MODE, $KP_MODE, $KC_MODE		#
 ;#======================================================#
-set val(fwd_mode)		$KC_MODE
+set val(fwd_mode)		$AF_MODE
 ;#======================================================#
 
 set val(ecc_delay)		1.6		; # ECC sig verification delay (sec)

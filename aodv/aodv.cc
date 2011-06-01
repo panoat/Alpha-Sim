@@ -50,10 +50,9 @@ static int route_request = 0;
 #endif
 
 
-/*
-  TCL Hooks
- */
 
+
+/* static vars init */
 key_pool AODV::global_key_pool;
 kchain_pool AODV::global_kchain_pool;
 bloom_filter AODV::global_bf;
@@ -64,9 +63,13 @@ list<double> AODV::global_fwd_record;
 list<double> AODV::global_rcv_record;
 list<double> AODV::global_app_record;
 int AODV::NEH_num = 0;
+bool AODV::bct_mode = false;
 
 int hdr_aodv::offset_;
 
+/*
+  TCL Hooks
+ */
 static class AODVHeaderClass : public PacketHeaderClass {
 public:
 
@@ -111,6 +114,11 @@ AODV::command(int argc, const char*const* argv) {
             return TCL_OK;
         }
 
+        if (strcmp(argv[1], "broadcast-tree") == 0) {
+            bct_mode = true;
+            return TCL_OK;
+        }
+
         if (strcmp(argv[1], "stat-summary") == 0) {
             stat_summary();
             return TCL_OK;
@@ -120,6 +128,7 @@ AODV::command(int argc, const char*const* argv) {
             stat_clear();
             return TCL_OK;
         }
+
     } else if (argc == 3) {
         if (strcmp(argv[1], "index") == 0) {
             index = atoi(argv[2]);
@@ -170,6 +179,7 @@ rtimer(this), lrtimer(this), rqueue(){
     logtarget = 0;
     ifqueue = 0;
     last_uid = -1;
+    parent_ip = -1;
 
     bind("key_set_num_",&key_set_num_);
     bind("fake_key_set_num_", &fake_key_set_num_);
@@ -217,7 +227,7 @@ rtimer(this), lrtimer(this), rqueue(){
             continue;
 
         key_chain kc;
-        kc.init_key_chain(0, global_kchain_pool.get_key(rand_i));
+        kc.init_key_chain(0, global_kchain_pool.get_key(rand_i), rand_i);
         local_key_chain.push_back( kc );
         record[rec_i++] = rand_i;
         i++;
@@ -687,6 +697,8 @@ printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
             }
             //--- end Fil BFV -----
 
+            ih->prio_ = here_.addr_;    // *hack* record sender ip into unused IPv6 field
+
         } // ENDIF broadcast packet with key-pool or key-chain mode
     }
   /*
@@ -700,6 +712,17 @@ printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
   *  Packet I'm forwarding...
   */
     else {
+
+        // Tony -- check for legitimate parent node in broadcast tree mode
+        // if parent_ip is incorrect, drop the packet
+        if( bct_mode && (parent_ip != -1) && (parent_ip != ih->prio()) ) {
+#ifdef TONY_DBG
+            printf("Node %d drop a packet from INVALID parent node %d\n", index, ih->prio());
+#endif
+            drop(p, DROP_RTR_ROUTE_LOOP);
+            return;
+        }
+
         delay = fwd_delay();
         /*
          *  Check the TTL.  If it is zero, then discard.
@@ -1121,7 +1144,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
     }
     if (ch->ptype() != PT_AODV
             && ch->direction() == hdr_cmn::UP
-            && ((u_int32_t) ih->daddr() == IP_BROADCAST)) { // a non-AODV Broadcast packet
+            && ((u_int32_t) ih->daddr() == IP_BROADCAST)) { // receiving a non-AODV Broadcast packet
 
         if (ch->uid() == last_uid) {    // Duplicate packet received
 #ifdef TONY_DBG
@@ -1133,12 +1156,17 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
 
         // Node receive NEW broadcast packet
 #ifdef TONY_DBG
-        printf("%.5f: Node %5d receives NEW broadcast normal packet from %d\n", CURRENT_TIME, index, ih->saddr());
+        printf("%.5f: Node %5d recv NEW msg originate from %d, forward by %d\n", \
+                CURRENT_TIME, index, ih->saddr(), ih->prio() );
 #endif
-        last_uid = ch->uid();
-        AODV::global_rcv_record.push_back(CURRENT_TIME); // record receiving time
+        if( fwd_mode == AUTHFIRST_MODE && bct_mode )        // broadcast tree records parent_ip in AF mode
+            parent_ip = ih->prio();
 
-        int verf_result = bfv_verification();
+        ih->prio_ = index;                                  // *hack* record fwding ip into unused IPv6 field
+        last_uid = ch->uid();                               // record last broadcast msg
+        AODV::global_rcv_record.push_back(CURRENT_TIME);    // record receiving time
+
+        int verf_result = bfv_verification();           // verify BFV
         if ( verf_result == BFV_PASS) {                 // verfication pass, fwd and pass up to app
 #ifdef TONY_DBG
             printf("%.5f: Node %5d -> packet from %d -- BFV verification PASS\n", CURRENT_TIME, index, ih->saddr());
