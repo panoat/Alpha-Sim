@@ -133,12 +133,18 @@ class AODV;
 #define FWDFIRST_MODE           0x01
 #define KEYPOOL_MODE            0x02
 #define KEYCHAIN_MODE           0x03
+#define BCT_PROBE_MODE          0x04
 
 // return value of BFV verification
 #define BFV_NOT_ENOUGH_HIT      0x0A
 #define BFV_PASS                0x0B
 #define BFV_FAIL                0x0C
 #define BFV_FAULT_PASS          0x0D
+
+// Broadcast tree mode
+#define BCT_ENABLE              1
+#define BCT_DISABLE             0
+#define BCT_UNINIT              -1
 
 #define TONY_DBG
 
@@ -561,10 +567,17 @@ printf("BF add key index %d\n", index);
 
         for( it = chain.begin(); it != chain.end(); it++ ) {
 #ifdef TONY_DBG
-printf("checking key %4d ---- %08X\n", it->get_keypos(), it->get_key());
+            printf("checking key %4d ---- %08X\n", it->get_keypos(), it->get_key());
 #endif
-            if( (it->get_index() > current_index)    // if the key isn't fresh
-                 || !check_data(it->get_key()) )   // or key is not valid in BFV
+            int it_index = it->get_index();
+
+            if( it_index > current_index )          // index is old
+                return BFV_FAIL;
+
+            while( it_index < current_index )       // advance the key until equal to current index
+                it->advance_key();
+
+            if( !check_data(it->get_key()) )        // check for BFV
                 return BFV_FAIL;
         }
         return BFV_PASS;
@@ -825,7 +838,7 @@ protected:
     // Tony
     int last_uid;                           // last broadcast packet's uid
     int parent_ip;                          // parent node's ip for broadcast tree
-    static bool bct_mode;                   // broadcast tree mode flag
+    static map<int, list<int> > bc_tree;     // map that store all children node for each node id
 
     static key_pool global_key_pool;        // every node share the key pool
     static kchain_pool global_kchain_pool;  // every node share key chain pool
@@ -836,8 +849,9 @@ protected:
     static list<double> global_app_record;  // application level receiving time record
     static int NEH_num;               // counting how many nodes verify DS
 
-    key_set local_key_set;
-    list<key_chain> local_key_chain;
+    key_set local_key_set;                  // for KP
+    list<key_chain> local_key_chain;        // for KC
+    list<key_chain> backup_key_chain;         // use for roll-back in case of DS verification fail
 
     // TCL variable
     int key_set_num_;           // number of sets in key pool (n)
@@ -857,7 +871,8 @@ protected:
     double bf_delay_;           // BF verification delay (sec)
     double ecc_delay_;          // ECC sig verification delay (sec)
 
-    int fwd_mode_;              // forwarding mode (Free, Key-pool or Key-chain)
+    static int fwd_mode_;              // forwarding mode (Free, Key-pool or Key-chain)
+    static int bct_mode_;              // broadcast tree mode flag
 
     int max_bfv_mark( int mode ) {
         int out;

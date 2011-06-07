@@ -1528,3 +1528,4 @@ Agent/AODV set bf_vector_size_      64
 Agent/AODV set bf_delay_            0.1
 Agent/AODV set ecc_delay_           2.0
 Agent/AODV set fwd_mode_            1
+Agent/AODV set bct_mode_            0

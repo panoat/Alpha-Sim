@@ -49,9 +49,6 @@ static int limit_route_request = 0;
 static int route_request = 0;
 #endif
 
-
-
-
 /* static vars init */
 key_pool AODV::global_key_pool;
 kchain_pool AODV::global_kchain_pool;
@@ -62,8 +59,10 @@ int bloom_filter::ds = rand();
 list<double> AODV::global_fwd_record;
 list<double> AODV::global_rcv_record;
 list<double> AODV::global_app_record;
+map<int,list<int> > AODV::bc_tree;
 int AODV::NEH_num = 0;
-bool AODV::bct_mode = false;
+int AODV::bct_mode_ = BCT_UNINIT;
+int AODV::fwd_mode_ = BCT_PROBE_MODE;
 
 int hdr_aodv::offset_;
 
@@ -114,8 +113,13 @@ AODV::command(int argc, const char*const* argv) {
             return TCL_OK;
         }
 
-        if (strcmp(argv[1], "broadcast-tree") == 0) {
-            bct_mode = true;
+        if (strcmp(argv[1], "bct-enable") == 0) {
+            bct_mode_ = BCT_ENABLE;
+            return TCL_OK;
+        }
+
+        if (strcmp(argv[1], "bct-disable") == 0) {
+            bct_mode_ = BCT_DISABLE;
             return TCL_OK;
         }
 
@@ -132,6 +136,9 @@ AODV::command(int argc, const char*const* argv) {
     } else if (argc == 3) {
         if (strcmp(argv[1], "index") == 0) {
             index = atoi(argv[2]);
+            return TCL_OK;
+        } else if (strcmp(argv[1], "fwd-mode") == 0) {
+            fwd_mode_ = atoi(argv[2]);
             return TCL_OK;
         } else if (strcmp(argv[1], "log-target") == 0 || strcmp(argv[1], "tracetarget") == 0) {
             logtarget = (Trace*) TclObject::lookup(argv[2]);
@@ -195,6 +202,7 @@ rtimer(this), lrtimer(this), rqueue(){
     bind("bf_delay_", &bf_delay_);
     bind("ecc_delay_", &ecc_delay_);
     bind("fwd_mode_", &fwd_mode_);
+    bind("bct_mode_", &bct_mode_);
 
     if( !(AODV::global_key_pool.is_init()) )    // if key_pool is not init, do it
         AODV::global_key_pool.init_key_pool(key_set_num_, key_set_size_);
@@ -232,6 +240,9 @@ rtimer(this), lrtimer(this), rqueue(){
         record[rec_i++] = rand_i;
         i++;
     }
+
+    backup_key_chain.assign(local_key_chain.begin(), local_key_chain.end());    // backup the local key chain
+    if( !bc_tree.empty() ) bc_tree.clear();                                     // clear broadcast tree map
     //--- end local key chain initialization ------
 }
 
@@ -656,7 +667,8 @@ AODV::recv(Packet *p, Handler*) {
         if ((u_int32_t) ih->daddr() != IP_BROADCAST) {
             ih->ttl_ = NETWORK_DIAMETER;
         }
-        else if( fwd_mode_ == KEYPOOL_MODE || fwd_mode_ == KEYCHAIN_MODE ) {      // it is a broadcast packet that I'm sending.
+        // it is a broadcast packet that I'm sending.
+        else if( fwd_mode_ == KEYPOOL_MODE || fwd_mode_ == KEYCHAIN_MODE ) {
 #ifdef TONY_DBG
 printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
 #endif
@@ -697,9 +709,12 @@ printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
             }
             //--- end Fil BFV -----
 
-            ih->prio_ = here_.addr_;    // *hack* record sender ip into unused IPv6 field
-
         } // ENDIF broadcast packet with key-pool or key-chain mode
+        else if( fwd_mode_ == BCT_PROBE_MODE ) {
+            AODV::bc_tree.clear();                  // clear bc_tree map on new probing packet
+        }
+
+        ih->prio_ = index;    // *hack* record sender ip into unused IPv6 field
     }
   /*
   *  I received a packet that I sent.  Probably
@@ -715,9 +730,9 @@ printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
 
         // Tony -- check for legitimate parent node in broadcast tree mode
         // if parent_ip is incorrect, drop the packet
-        if( bct_mode && (parent_ip != -1) && (parent_ip != ih->prio()) ) {
+        if( (bct_mode_ == BCT_ENABLE) && (parent_ip != -1) && (parent_ip != ih->prio()) ) {
 #ifdef TONY_DBG
-            printf("Node %d drop a packet from INVALID parent node %d\n", index, ih->prio());
+            printf("%.5f: Node %d drop INVALID parent node %d packet, valid parent = %d\n", CURRENT_TIME, index, ih->prio(), parent_ip);
 #endif
             drop(p, DROP_RTR_ROUTE_LOOP);
             return;
@@ -1159,8 +1174,13 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         printf("%.5f: Node %5d recv NEW msg originate from %d, forward by %d\n", \
                 CURRENT_TIME, index, ih->saddr(), ih->prio() );
 #endif
-        if( fwd_mode == AUTHFIRST_MODE && bct_mode )        // broadcast tree records parent_ip in AF mode
-            parent_ip = ih->prio();
+        if( fwd_mode_ == BCT_PROBE_MODE && bct_mode_ == BCT_ENABLE ) { // broadcast tree records parent_ip
+#ifdef TONY_DBG
+            printf("[%d] ---parent----> [%d]\n", ih->prio(), index);
+#endif
+            parent_ip = ih->prio();                         // record parent ip at local node
+            AODV::bc_tree[parent_ip].push_back(index);      // record child ip into bc_tree map
+        }
 
         ih->prio_ = index;                                  // *hack* record fwding ip into unused IPv6 field
         last_uid = ch->uid();                               // record last broadcast msg
@@ -1174,13 +1194,6 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
             AODV::global_fwd_record.push_back(CURRENT_TIME + delay);    // record forwarding time
             AODV::global_app_record.push_back(CURRENT_TIME + app_delay());    // record app receving time
             Scheduler::instance().schedule(dmux_, p->copy(), app_delay());    // pass up w/ BF verification delay
-
-            if( fwd_mode_ == KEYCHAIN_MODE ) {       // if pass in key chain mode w/ auth keys
-                
-                list<key_chain>::iterator it;
-                  for ( it=local_key_chain.begin() ; it != local_key_chain.end(); it++ )
-                      it->advance_key();      // advance the key index
-            }
         }
         else if ( verf_result == BFV_FAULT_PASS ) {     // faulty BFV pass, fwd only
 #ifdef TONY_DBG
@@ -1201,7 +1214,10 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
             drop(p, DROP_RTR_ROUTE_LOOP);
             return;
         }
+    }
 
+    if( fwd_mode_ == KEYCHAIN_MODE && fake_kcs_num_ == 0 ) {                        // if the packet is authentic
+        local_key_chain.assign(backup_key_chain.begin(), backup_key_chain.end());   // key advance is permanent
     }
 
     if (rt) {
@@ -1228,7 +1244,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
             Scheduler::instance().schedule(target_, p,
                     0.01 * Random::uniform());
         } else {
-//            printf("%.5f: Node %d broadcast normal packet\n", CURRENT_TIME + delay, index);
+            printf("%.5f: Node %d broadcast packet ID%d\n", CURRENT_TIME + delay, index, ch->uid());
             Scheduler::instance().schedule(target_, p, delay ); // fwd w/ BF verification delay
         }
     } else { // Not a broadcast packet
@@ -1244,7 +1260,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
 
 int
 AODV::bfv_verification() {
-    if( fwd_mode_ == FWDFIRST_MODE )        // Forwarding-first
+    if( fwd_mode_ == FWDFIRST_MODE || fwd_mode_ == BCT_PROBE_MODE )     // Forwarding-first
         return BFV_PASS;
 
     if( fwd_mode_ == AUTHFIRST_MODE ) {     // Authentication-first
@@ -1261,8 +1277,9 @@ AODV::bfv_verification() {
         fake_num = fake_key_set_num_;
     }
     else {
+        backup_key_chain.assign(local_key_chain.begin(), local_key_chain.end());
         int count = AODV::global_kchain_pool.get_key_index();
-        result = AODV::global_bf.check_key_chain(local_key_chain, count );
+        result = AODV::global_bf.check_key_chain(backup_key_chain, count );
         fake_num = fake_kcs_num_;
     }
 
@@ -1618,7 +1635,7 @@ AODV::stat_of( list<double> lst, const char* desc ) {
 
     //printf("Total %s nodes = %d\n", desc, size );
     printf("%d\t", size);
-    
+
     list<double>::iterator it;
     double max = -1;
     double min = -1;
@@ -1630,7 +1647,7 @@ AODV::stat_of( list<double> lst, const char* desc ) {
 
     for( it = lst.begin(); it != lst.end(); it++ ) {
         sum += *it;
-        
+
         if( *it > max ) max = *it;
         if( *it < min ) min = *it;
     }
@@ -1651,6 +1668,7 @@ double
 AODV::fwd_delay() {
     switch (fwd_mode_) {
         case AUTHFIRST_MODE :   return ecc_delay_;
+        case BCT_PROBE_MODE :
         case FWDFIRST_MODE :    return NO_DELAY;
         case KEYPOOL_MODE:
         case KEYCHAIN_MODE:     return bf_delay_;
@@ -1662,6 +1680,7 @@ double
 AODV::app_delay() {
     switch (fwd_mode_) {
         case AUTHFIRST_MODE :
+        case BCT_PROBE_MODE :
         case FWDFIRST_MODE :    return ecc_delay_;
         case KEYPOOL_MODE :
         case KEYCHAIN_MODE:     return ecc_delay_ + bf_delay_ ;
