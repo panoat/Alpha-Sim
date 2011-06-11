@@ -59,7 +59,7 @@ int bloom_filter::ds = rand();
 list<double> AODV::global_fwd_record;
 list<double> AODV::global_rcv_record;
 list<double> AODV::global_app_record;
-map<int,list<int> > AODV::bc_tree;
+map<int,set<int> > AODV::bc_tree;
 int AODV::NEH_num = 0;
 int AODV::bct_mode_ = BCT_UNINIT;
 int AODV::fwd_mode_ = BCT_PROBE_MODE;
@@ -125,6 +125,11 @@ AODV::command(int argc, const char*const* argv) {
 
         if (strcmp(argv[1], "stat-summary") == 0) {
             stat_summary();
+            return TCL_OK;
+        }
+
+        if (strcmp(argv[1], "bct-summary") == 0) {
+            bct_summary();
             return TCL_OK;
         }
 
@@ -584,7 +589,6 @@ AODV::rt_resolve(Packet *p) {
 
         drop(p, DROP_RTR_NO_ROUTE);
     }
-
 }
 
 void
@@ -664,14 +668,17 @@ AODV::recv(Packet *p, Handler*) {
          */
         ch->size() += IP_HDR_LEN;
         // Added by Parag Dadhania && John Novatnack to handle broadcasting
-        if ((u_int32_t) ih->daddr() != IP_BROADCAST) {
+        if ((u_int32_t) ih->daddr() != IP_BROADCAST && bct_mode_ != BCT_ENABLE ) {
             ih->ttl_ = NETWORK_DIAMETER;
         }
         // it is a broadcast packet that I'm sending.
         else if( fwd_mode_ == KEYPOOL_MODE || fwd_mode_ == KEYCHAIN_MODE ) {
 #ifdef TONY_DBG
-printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
+printf("%.5f: Node %d creating BFV ....\n",CURRENT_TIME, index );
 #endif
+            if( fwd_mode_ == KEYCHAIN_MODE && fake_kcs_num_ == 0 )   // only adv key chins w/ all auth keys
+                AODV::global_kchain_pool.advance_kchain_pool();
+
             int max_mark = max_bfv_mark(fwd_mode_);     // maximum allowed BFV "1" mark
             int gen_count = 0;                          // BFV generation counter
             do {
@@ -688,9 +695,6 @@ printf("%.5f: Node %d creating BFV .... ",CURRENT_TIME, index );
                 }
                 gen_count++;
             }while( AODV::global_bf.mark_num() > max_mark );     // re-gen bfv until max-mark limit is satisfied
-
-            if( fwd_mode_ == KEYCHAIN_MODE && fake_kcs_num_ == 0 )   // only adv key chins w/ all auth keys
-                AODV::global_kchain_pool.advance_kchain_pool();
 
             //--- fill up fake BFV to the max
             delay = NO_DELAY;
@@ -1157,9 +1161,15 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         dmux_->recv(p, 0);
         return;
     }
-    if (ch->ptype() != PT_AODV
-            && ch->direction() == hdr_cmn::UP
-            && ((u_int32_t) ih->daddr() == IP_BROADCAST)) { // receiving a non-AODV Broadcast packet
+
+    bool non_aodv = ch->ptype() != PT_AODV;
+    bool receiving = ch->direction() == hdr_cmn::UP;
+    bool broadcast_packet = ((u_int32_t) ih->daddr() == IP_BROADCAST);
+    //bool packet_for_me = ((u_int32_t) ih->daddr() == index);
+    bool use_bct_mode = bct_mode_ == BCT_ENABLE;
+
+    if ( non_aodv && receiving && (broadcast_packet || use_bct_mode ) ) {
+        // receiving a non-AODV Broadcast packet or a packet in BCT mode
 
         if (ch->uid() == last_uid) {    // Duplicate packet received
 #ifdef TONY_DBG
@@ -1174,12 +1184,12 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         printf("%.5f: Node %5d recv NEW msg originate from %d, forward by %d\n", \
                 CURRENT_TIME, index, ih->saddr(), ih->prio() );
 #endif
-        if( fwd_mode_ == BCT_PROBE_MODE && bct_mode_ == BCT_ENABLE ) { // broadcast tree records parent_ip
+        if( fwd_mode_ == BCT_PROBE_MODE && use_bct_mode ) { // broadcast tree records parent_ip
 #ifdef TONY_DBG
             printf("[%d] ---parent----> [%d]\n", ih->prio(), index);
 #endif
             parent_ip = ih->prio();                         // record parent ip at local node
-            AODV::bc_tree[parent_ip].push_back(index);      // record child ip into bc_tree map
+            AODV::bc_tree[parent_ip].insert(index);      // record child ip into bc_tree map
         }
 
         ih->prio_ = index;                                  // *hack* record fwding ip into unused IPv6 field
@@ -1233,22 +1243,39 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         ch->direction() = hdr_cmn::DOWN; //important: change the packet's direction
     }
 
-    if (ih->daddr() == (nsaddr_t) IP_BROADCAST) {
-        // If it is a broadcast packet
+    /*------- Schedule packet -------*/
+    if ( (broadcast_packet && !use_bct_mode && non_aodv)
+            || (fwd_mode_ == BCT_PROBE_MODE) ) {
+        // broadcast w/ BFV delay
+        printf("%.5f: Node %d broadcast packet ID%d\n", CURRENT_TIME + delay, index, ch->uid());
+        Scheduler::instance().schedule(target_, p, delay ); // fwd w/ BF verification delay
+    }
+    else if ( broadcast_packet && !non_aodv ) {
         assert(rt == 0);
-        if (ch->ptype() == PT_AODV) {
-//            printf("Node %d broadcast AODV packet\n", index);
-            /*
-             *  Jitter the sending of AODV broadcast packets by 10ms
-             */
-            Scheduler::instance().schedule(target_, p,
-                    0.01 * Random::uniform());
-        } else {
-            printf("%.5f: Node %d broadcast packet ID%d\n", CURRENT_TIME + delay, index, ch->uid());
-            Scheduler::instance().schedule(target_, p, delay ); // fwd w/ BF verification delay
+        /*
+         *  Jitter the sending of AODV broadcast packets by 10ms
+         */
+        printf("%.5f: Node %d broadcast AODV packet.\n", CURRENT_TIME, index );
+        Scheduler::instance().schedule(target_, p,
+                0.01 * Random::uniform());
+    }
+    else if ( use_bct_mode && non_aodv ) {
+        // use unicast to simulate BCT
+        set<int> children = AODV::bc_tree[index];
+        for( set<int>::iterator it = children.begin(); it != children.end(); it++) {
+            Packet *np = p->copy();
+            struct hdr_ip *ih = HDR_IP(np);
+            ih->daddr() = *it;
+            printf("%.5f: Node %d send a normal packet to Node %d\n",CURRENT_TIME + delay, index, *it);
+            Scheduler::instance().schedule(target_, np, delay);
+            //**************** PROBLEM HERE ******************//
+            // packet is not received by the destination
+            // probably need to submit it through aodv function...
+            // -- todo-- analyze trace file
         }
-    } else { // Not a broadcast packet
-//        printf("%.5f: Node %d send normal packet to %d with %.2f delay.\n", CURRENT_TIME, index, ih->daddr(), delay);
+    }
+    else {  // send normal packet
+        printf("%.5f: Node %d send normal packet to %d with %.2f delay.\n", CURRENT_TIME, index, ih->daddr(), delay);
         if (delay > 0.0) {
             Scheduler::instance().schedule(target_, p, delay);
         } else {
@@ -1256,6 +1283,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
             Scheduler::instance().schedule(target_, p, 0.);
         }
     }
+    /*---- End packet scheduling -----*/
 }
 
 int
@@ -1626,6 +1654,20 @@ AODV::stat_summary() {
     printf("%d\n", AODV::NEH_num);
     //printf("====================================\n");
     stat_clear();
+}
+
+void
+AODV::bct_summary() {
+    map<int, set<int> >::iterator it;
+    printf("    Broadcast Tree:\n");
+    for( it = AODV::bc_tree.begin(); it != AODV::bc_tree.end(); it++ ) {
+        printf("    Node %4d : ", it->first);
+        set<int>::iterator sit;
+        for( sit = (it->second).begin(); sit != (it->second).end(); sit++ )
+            printf("%d,", *sit);
+        printf("\n");
+    }
+
 }
 
 void

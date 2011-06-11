@@ -39,6 +39,7 @@ The AODV code developed by the CMU/MONARCH group was optimized and tuned by Sami
 
 #include <list>
 #include <map>
+#include <set>
 #include <vector>
 #include <time.h>
 #include <cmu-trace.h>
@@ -394,13 +395,13 @@ public:
 
     void advance_key() {
 #ifdef TONY_DBG
-printf("[%08X]--->[", current_key);
+printf("<%03d> %08X[%03d]--->",kc_position, current_key, key_index);
 #endif
         key_index++;
         srand(current_key ^ salt);
         current_key = rand();
 #ifdef TONY_DBG
-printf("%08X]\n", current_key);
+printf("%08X[%03d]\n", current_key, key_index);
 #endif
     }
 
@@ -555,7 +556,7 @@ public:
 
         key_index[index] = index; // record index
 #ifdef TONY_DBG
-printf("BF add key index %d\n", index);
+printf("BF add key %X[%d] with DS = %X\n", key, index, bloom_filter::ds);
 #endif
         for ( unsigned int i = 0; i < hash_list.size(); i++) { // insert into BFV
             bf_vector[bf_index( bloom_filter::ds ^ key, hash_list[i])] = true;
@@ -574,8 +575,10 @@ printf("BF add key index %d\n", index);
             if( it_index > current_index )          // index is old
                 return BFV_FAIL;
 
-            while( it_index < current_index )       // advance the key until equal to current index
+            while( it_index < current_index ) {      // advance the key until equal to current index
                 it->advance_key();
+                it_index++;
+            }
 
             if( !check_data(it->get_key()) )        // check for BFV
                 return BFV_FAIL;
@@ -838,7 +841,7 @@ protected:
     // Tony
     int last_uid;                           // last broadcast packet's uid
     int parent_ip;                          // parent node's ip for broadcast tree
-    static map<int, list<int> > bc_tree;     // map that store all children node for each node id
+    static map<int, set<int> > bc_tree;     // map that store all children node for each node id
 
     static key_pool global_key_pool;        // every node share the key pool
     static kchain_pool global_kchain_pool;  // every node share key chain pool
@@ -896,6 +899,7 @@ printf("Max bit limit = %d, Delta = %d\n", out, bf_delta_);
     }
 
     void stat_summary();
+    void bct_summary();
     void stat_clear();
     void stat_of(list<double> lst, const char* desc);
     

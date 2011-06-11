@@ -346,7 +346,8 @@ if { $val(bct_mode) == $BCT_ENABLE } {
     $ns_ at [expr $val(start) * 0.1] "$app_(0) add_temp_data_param 5 0"
     $ns_ at [expr $val(start) * 0.1] "$app_(0) send_request"
     $ns_ at [expr $val(start) * 0.8] "$dummy_rt stat-summary"
-    $ns_ at [expr $val(start) * 0.8] "$dummy_rt fwd-mode $val(fwd_mode)"
+    $ns_ at [expr $val(start) * 0.8] "$dummy_rt bct-summary"
+    $ns_ at [expr $val(start) * 0.9] "$dummy_rt fwd-mode $val(fwd_mode)"
 }
 
 # send_request + stat-summary loop for batch analysis
