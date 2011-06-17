@@ -1,7 +1,7 @@
 # ==================================
 # Simulation parameters
 # ==================================
-set version	04BT
+set version	04TEST
 set logDir	"/home/gato/ns-log"
 set namtr	"$logDir/beta$version.nam"	;# nam trace file
 set nstr	"$logDir/beta$version.out"	;# ns trace file
