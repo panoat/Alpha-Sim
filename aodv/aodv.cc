@@ -40,7 +40,7 @@ The AODV code developed by the CMU/MONARCH group was optimized and tuned by Sami
 #define max(a,b)        ( (a) > (b) ? (a) : (b) )
 #define CURRENT_TIME    Scheduler::instance().clock()
 #define DBG(x)          printf( "TONY-DEBUG: "#x"\n");
-
+//#define TONY_DBG
 //#define DEBUG
 //#define ERROR
 
@@ -547,10 +547,17 @@ AODV::rt_resolve(Packet *p) {
         rt = rtable.rt_add(ih->daddr());
     }
 
+/*    // TONY -- if we're in BCT mode, use RREP_ACK for unicast packet
+    if ( bct_mode_ == BCT_ENABLE ) {
+        struct hdr_aodv *ah = HDR_AODV(p);
+
+        ah->ah_type = AODVTYPE_RREP_ACK;
+        ch->ptype() = PT_AODV;
+    }
+*/
     /*
      * If the route is up, forward the packet
      */
-
     if (rt->rt_flags == RTF_UP) {
         assert(rt->rt_hops != INFINITY2);
         forward(rt, p, NO_DELAY);
@@ -647,20 +654,22 @@ void
 AODV::recv(Packet *p, Handler*) {
     struct hdr_cmn *ch = HDR_CMN(p);
     struct hdr_ip *ih = HDR_IP(p);
+    struct hdr_aodv *ah = HDR_AODV(p);
     double delay = 0;
 
     assert(initialized());
     //assert(p->incoming == 0);
     // XXXXX NOTE: use of incoming flag has been depracated; In order to track direction of pkt flow, direction_ in hdr_cmn is used instead. see packet.h for details.
-    printf("Node %4d ", index);
-    DBG(0)
-    if (ch->ptype() == PT_AODV) {
+
+    if (ch->ptype() == PT_AODV && ah->ah_type != AODVTYPE_RREP_ACK ) {
+            //printf("Node %4d receive an AODV packet\n", index);
         ih->ttl_ -= 1;
         recvAODV(p);
         return;
     }
-    DBG(1)
-
+#ifdef TONY_DBG
+    printf("%.5f Node %d , packet src = %d, num fwd = %d\n", CURRENT_TIME, index, ih->saddr(), ch->num_forwards());
+#endif
     /*
      *  Must be a packet I'm originating...
      */
@@ -728,6 +737,9 @@ AODV::recv(Packet *p, Handler*) {
     *  a routing loop.
     */
     else if (ih->saddr() == index) {
+#ifdef TONY_DBG
+        printf("Node %4d drop routing loop packet\n", index);
+#endif
         drop(p, DROP_RTR_ROUTE_LOOP);
         return;
     }
@@ -735,7 +747,6 @@ AODV::recv(Packet *p, Handler*) {
     *  Packet I'm forwarding...
     */
     else {
-        DBG(2)
         // Tony -- check for legitimate parent node in broadcast tree mode
         // if parent_ip is incorrect, drop the packet
         if( (bct_mode_ == BCT_ENABLE) && (parent_ip != -1) && (parent_ip != ih->prio()) ) {
@@ -745,7 +756,7 @@ AODV::recv(Packet *p, Handler*) {
             drop(p, DROP_RTR_ROUTE_LOOP);
             return;
         }
-        DBG(3)
+
         delay = fwd_delay();
         /*
          *  Check the TTL.  If it is zero, then discard.
@@ -754,17 +765,16 @@ AODV::recv(Packet *p, Handler*) {
             drop(p, DROP_RTR_TTL);
             return;
         }
-        DBG(4)
-        bool non_aodv = ch->ptype() != PT_AODV;
+
+        //bool non_aodv = ch->ptype() != PT_AODV;
         bool receiving = ch->direction() == hdr_cmn::UP;
         bool broadcast_packet = ((u_int32_t) ih->daddr() == IP_BROADCAST);
         //bool packet_for_me = ((u_int32_t) ih->daddr() == index);
         bool use_bct_mode = bct_mode_ == BCT_ENABLE;
-        DBG(5)
-        if ( non_aodv && receiving && (broadcast_packet || use_bct_mode ) ) {
+
+        if ( receiving && (broadcast_packet || use_bct_mode ) ) {
             // receiving a non-AODV Broadcast packet or a packet in BCT mode
-            DBG(50)
-            if (ch->uid() == last_uid) {    // Duplicate packet received
+            if (!use_bct_mode && ch->uid() == last_uid) {    // Duplicate packet received
 #ifdef TONY_DBG
                 printf("%.5f: Node %5d drop DUP broadcast packet\n", CURRENT_TIME, index);
 #endif
@@ -790,13 +800,15 @@ AODV::recv(Packet *p, Handler*) {
             AODV::global_rcv_record.push_back(CURRENT_TIME);    // record receiving time
 
             int verf_result = bfv_verification();           // verify BFV
-            if ( verf_result == BFV_PASS) {                 // verfication pass, fwd and pass up to app
+            bool neh = verf_result == BFV_NOT_ENOUGH_HIT;
+
+            if ( verf_result == BFV_FAIL || (neh && fake_key_set_num_ > 0) ) {
 #ifdef TONY_DBG
-                printf("%.5f: Node %5d -> packet from %d -- BFV verification PASS\n", CURRENT_TIME, index, ih->saddr());
+                printf("%.5f: Node %5d -> packet from %d -- BFV verification %s FAIL\n",
+                        CURRENT_TIME, index, ih->saddr(), neh?"NEH":"");
 #endif
-                AODV::global_fwd_record.push_back(CURRENT_TIME + delay);    // record forwarding time
-                AODV::global_app_record.push_back(CURRENT_TIME + app_delay());    // record app receving time
-                Scheduler::instance().schedule(dmux_, p->copy(), app_delay());    // pass up w/ BF verification delay
+                drop(p, DROP_RTR_ROUTE_LOOP);
+                return;
             }
             else if ( verf_result == BFV_FAULT_PASS ) {     // faulty BFV pass, fwd only
 #ifdef TONY_DBG
@@ -804,18 +816,16 @@ AODV::recv(Packet *p, Handler*) {
 #endif
                 AODV::global_fwd_record.push_back(CURRENT_TIME + delay);    // record forwarding time
             }
-            else if ( verf_result == BFV_NOT_ENOUGH_HIT && fake_key_set_num_ == 0 ) {     // not enough BFV hit, act like auth-first
-                delay += ecc_delay_;        // fwd w/ increase delay
+            else {  // verification pass or not enough hit
+#ifdef TONY_DBG
+                printf("%.5f: Node %5d -> packet from %d -- BFV verification %s PASS\n",
+                        CURRENT_TIME, index, ih->saddr(), neh?"NEH":"");
+#endif
+                if (neh) delay += ecc_delay_;    // fwd w/ increase delay
+
                 AODV::global_fwd_record.push_back(CURRENT_TIME + delay);    // record forwarding time
                 AODV::global_app_record.push_back(CURRENT_TIME + app_delay());    // record app receving time
-                Scheduler::instance().schedule(dmux_, p->copy(), app_delay());
-            }
-            else {      // BFV fail
-#ifdef TONY_DBG
-                printf("%.5f: Node %5d -> packet from %d -- BFV verification FAIL\n", CURRENT_TIME, index, ih->saddr());
-#endif
-                drop(p, DROP_RTR_ROUTE_LOOP);
-                return;
+                //Scheduler::instance().schedule(dmux_, p->copy(), app_delay());    // pass up w/ BF verification delay
             }
         }
 
@@ -824,29 +834,50 @@ AODV::recv(Packet *p, Handler*) {
         }
 
     }
-    DBG(6)
+
     // Added by Parag Dadhania && John Novatnack to handle broadcasting
 
-
+    // TONY - use unicast to simulate broadcast in BCT mode
     if ( bct_mode_ == BCT_ENABLE && !(fwd_mode_ == BCT_PROBE_MODE ) ) {
-        DBG(600)
-        // use unicast to simulate BCT
+
         set<int> children = AODV::bc_tree[index];
-        //for( set<int>::iterator it = children.begin(); it != children.end(); it++) {
-        for( set<int>::iterator it = children.begin(); it != children.end(); it = children.end()) {
-            Packet *np = p->copy();
-            struct hdr_ip *ih = HDR_IP(np);
-            ih->daddr() = *it;
-            printf("%.5f: Node %d send a normal packet to Node %d\n",CURRENT_TIME + delay, index, *it);
-            rt_resolve(np);
+        for( set<int>::iterator it = children.begin(); it != children.end(); it++) {
+        //for( set<int>::iterator it = children.begin(); it != children.end(); it = children.end()) {
+            Packet *uni = Packet::alloc();
+            struct hdr_cmn *cn = HDR_CMN(uni);
+            struct hdr_ip *in = HDR_IP(uni);
+            struct hdr_aodv_rrep_ack *rra = HDR_AODV_RREP_ACK(uni);
+
+            cn->uid() = ch->uid();
+            cn->ptype() = PT_AODV;
+            cn->size() = ch->size();
+            cn->iface() = -2;
+            cn->error() = 0;
+            cn->addr_type() = ch->addr_type();
+            cn->num_forwards() = 0;
+            cn->prev_hop_ = index; // AODV hack
+
+            in->saddr() = index;
+            in->daddr() = *it;
+            in->sport() = RT_PORT;
+            in->dport() = RT_PORT;
+            in->ttl_ = 3;
+            in->prio() = index;
+
+            rra->rpack_type = AODVTYPE_RREP_ACK;
+#ifdef TONY_DBG
+            printf("%.5f: Node %d send a simulated BC packet to Node %d\n",CURRENT_TIME + delay, index, *it);
+#endif
+            //rt_resolve(uni);
+            forward((aodv_rt_entry*) 0, uni, delay + (1 * Random::uniform()));
         }
+
+        Packet::free(p);        // remove original packet from the network
     }
     else if ((u_int32_t) ih->daddr() != IP_BROADCAST) {
-            DBG(601)
             rt_resolve(p);
     }
     else {
-        DBG(7)
         forward((aodv_rt_entry*) 0, p, delay);
     }
 }
@@ -861,26 +892,21 @@ AODV::recvAODV(Packet *p) {
     /*
      * Incoming Packets.
      */
-    printf("Node %3d ",index);
     switch (ah->ah_type) {
 
         case AODVTYPE_RREQ:
-            DBG(recvRequest)
             recvRequest(p);
             break;
 
         case AODVTYPE_RREP:
-            DBG(recvReply)
             recvReply(p);
             break;
 
         case AODVTYPE_RERR:
-            DBG(recvError)
             recvError(p);
             break;
 
         case AODVTYPE_HELLO:
-            DBG(recvHello)
             recvHello(p);
             break;
 
@@ -925,8 +951,6 @@ AODV::recvRequest(Packet *p) {
      * Cache the broadcast ID
      */
     id_insert(rq->rq_src, rq->rq_bcast_id);
-
-
 
     /*
      * We are either going to forward the REQUEST or generate a
@@ -976,7 +1000,6 @@ AODV::recvRequest(Packet *p) {
     }
     // End for putting reverse route in rt table
 
-
     /*
      * We have taken care of the reverse route stuff.
      * Now see whether we can send a route reply.
@@ -992,7 +1015,6 @@ AODV::recvRequest(Packet *p) {
         fprintf(stderr, "%d - %s: destination sending reply\n",
                 index, __FUNCTION__);
 #endif // DEBUG
-
 
         // Just to be safe, I use the max. Somebody may have
         // incremented the dst seqno.
@@ -1071,7 +1093,6 @@ AODV::recvReply(Packet *p) {
     fprintf(stderr, "%d - %s: received a REPLY\n", index, __FUNCTION__);
 #endif // DEBUG
 
-    DBG(A0)
     /*
      *  Got a reply. So reset the "soft state" maintained for
      *  route requests in the request table. We don't really have
@@ -1089,7 +1110,6 @@ AODV::recvReply(Packet *p) {
     if (rt == 0) {
         rt = rtable.rt_add(rp->rp_dst);
     }
-    DBG(A1)
     /*
      * Add a forward route table entry... here I am following
      * Perkins-Royer AODV paper almost literally - SRD 5/99
@@ -1098,7 +1118,6 @@ AODV::recvReply(Packet *p) {
     if ((rt->rt_seqno < rp->rp_dst_seqno) || // newer route
             ((rt->rt_seqno == rp->rp_dst_seqno) &&
             (rt->rt_hops > rp->rp_hop_count))) { // shorter or better route
-    DBG(A11)
         // Update the rt entry
         rt_update(rt, rp->rp_dst_seqno, rp->rp_hop_count,
                 rp->rp_src, CURRENT_TIME + rp->rp_lifetime);
@@ -1107,7 +1126,6 @@ AODV::recvReply(Packet *p) {
         rt->rt_req_cnt = 0;
         rt->rt_req_timeout = 0.0;
         rt->rt_req_last_ttl = rp->rp_hop_count;
-    DBG(A12)
         if (ih->daddr() == index) { // If I am the original source
             // Update the route discovery latency statistics
             // rp->rp_timestamp is the time of request origination
@@ -1117,7 +1135,6 @@ AODV::recvReply(Packet *p) {
             // increment indx for next time
             rt->hist_indx = (rt->hist_indx + 1) % MAX_HISTORY;
         }
-    DBG(A13)
         /*
          * Send all packets queued in the sendbuffer destined for
          * this destination.
@@ -1129,32 +1146,30 @@ AODV::recvReply(Packet *p) {
                 assert(rt->rt_flags == RTF_UP);
                 // Delay them a little to help ARP. Otherwise ARP
                 // may drop packets. -SRD 5/23/99
+#ifdef TONY_DBG
     struct hdr_cmn *ck = HDR_CMN(buf_pkt);
     struct hdr_ip *ik = HDR_IP(buf_pkt);
     printf("Send %sAODV %s to node %d\n", (ck->ptype()==PT_AODV?"":"Non-"),
                                         ck->direction() == hdr_cmn::UP?"UP":"DOWN",
                                         ik->daddr());
+#endif
                 forward(rt, buf_pkt, delay);
                 delay += ARP_DELAY;
             }
         }
-        DBG(A14)
     } else {
         suppress_reply = 1;
     }
-    DBG(A2)
     /*
      * If reply is for me, discard it.
      */
 
     if (ih->daddr() == index || suppress_reply) {
-    DBG(A21)
         Packet::free(p);
     }/*
   * Otherwise, forward the Route Reply.
   */
     else {
-    DBG(A22)
         // Find the rt entry
         aodv_rt_entry *rt0 = rtable.rt_lookup(ih->daddr());
         // If the rt is up, forward
@@ -1166,9 +1181,7 @@ AODV::recvReply(Packet *p) {
             // Insert the nexthop towards the RREQ source to
             // the precursor list of the RREQ destination
             rt->pc_insert(rt0->rt_nexthop); // nexthop to RREQ source
-    DBG(A23)
         } else {
-    DBG(A24)
             // I don't know how to forward .. drop the reply.
 #ifdef DEBUG
             fprintf(stderr, "%s: dropping Route Reply\n", __FUNCTION__);
@@ -1242,7 +1255,7 @@ void
 AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
     struct hdr_cmn *ch = HDR_CMN(p);
     struct hdr_ip *ih = HDR_IP(p);
-    DBG(B0)
+
     if (ih->ttl_ == 0) {
 
 #ifdef DEBUG
@@ -1258,7 +1271,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         dmux_->recv(p, 0);
         return;
     }*/
-    DBG(B1)
+
     if (ih->daddr() == here_.addr_) {
 #ifdef TONY_DBG
         printf("%.5f: Node %5d receives normal packet from %d\n", CURRENT_TIME, index, ih->saddr());
@@ -1266,7 +1279,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         dmux_->recv(p, 0);
         return;
     }
-    DBG(B2)
+
     if (rt) {
         assert(rt->rt_flags == RTF_UP);
         rt->rt_expire = CURRENT_TIME + ACTIVE_ROUTE_TIMEOUT;
@@ -1279,7 +1292,7 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
         ch->addr_type() = NS_AF_NONE;
         ch->direction() = hdr_cmn::DOWN; //important: change the packet's direction
     }
-    DBG(B3)
+
     if (ih->daddr() == (nsaddr_t) IP_BROADCAST) {
         // If it is a broadcast packet
         assert(rt == 0);
@@ -1290,12 +1303,16 @@ AODV::forward(aodv_rt_entry *rt, Packet *p, double delay) {
             //printf("%.5f: Node %d broadcast AODV packet.\n", CURRENT_TIME, index );
             Scheduler::instance().schedule(target_, p,
                     0.01 * Random::uniform());
-        } else {    // non-AODV broadcast packet
+        } else { // non-AODV broadcast packet
+#ifdef TONY_DBG
             printf("%.5f: Node %d broadcast packet ID%d\n", CURRENT_TIME + delay, index, ch->uid());
+#endif
             Scheduler::instance().schedule(target_, p, delay); // fwd with BF delay
         }
     } else { // Not a broadcast packet
-        printf("%.5f: Node %d send normal packet to %d with %.2f delay.\n", CURRENT_TIME, index, ih->daddr(), delay);
+#ifdef TONY_DBG
+        printf("%.5f: Node %d send non-broadcast packet to %d with %.2f delay.\n", CURRENT_TIME, index, ih->daddr(), delay);
+#endif
         if (delay > 0.0) {
             Scheduler::instance().schedule(target_, p, delay);
         } else {
@@ -1341,8 +1358,6 @@ AODV::bfv_verification() {
 
 void
 AODV::sendRequest(nsaddr_t dst) {
-    printf("Node %3d ",index);
-    DBG(sendRequest)
     // Allocate a RREQ packet
     Packet *p = Packet::alloc();
     struct hdr_cmn *ch = HDR_CMN(p);
@@ -1466,8 +1481,6 @@ AODV::sendRequest(nsaddr_t dst) {
 void
 AODV::sendReply(nsaddr_t ipdst, u_int32_t hop_count, nsaddr_t rpdst,
         u_int32_t rpseq, u_int32_t lifetime, double timestamp) {
-    printf("Node %3d ",index);
-    DBG(sendReply)
     Packet *p = Packet::alloc();
     struct hdr_cmn *ch = HDR_CMN(p);
     struct hdr_ip *ih = HDR_IP(p);
@@ -1510,8 +1523,6 @@ AODV::sendReply(nsaddr_t ipdst, u_int32_t hop_count, nsaddr_t rpdst,
 
 void
 AODV::sendError(Packet *p, bool jitter) {
-    printf("Node %3d ",index);
-    DBG(sendError)
     struct hdr_cmn *ch = HDR_CMN(p);
     struct hdr_ip *ih = HDR_IP(p);
     struct hdr_aodv_error *re = HDR_AODV_ERROR(p);
@@ -1554,8 +1565,6 @@ AODV::sendError(Packet *p, bool jitter) {
 
 void
 AODV::sendHello() {
-    printf("Node %3d ",index);
-    DBG(sendHello)
     Packet *p = Packet::alloc();
     struct hdr_cmn *ch = HDR_CMN(p);
     struct hdr_ip *ih = HDR_IP(p);

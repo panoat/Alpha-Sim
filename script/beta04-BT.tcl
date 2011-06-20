@@ -28,7 +28,7 @@ set val(ifqlen)	200				; # queue length
 set val(rp)	AODV				; # routing protocol
 set val(en)	EnergyModel/Battery		; # energy model
 set val(n_pas)		1			; # number os access points
-set val(n_common) 	60			; # number of common nodes
+set val(n_common) 	500			; # number of common nodes
 set val(nn)	[expr $val(n_pas) \
 		+ $val(n_common)]		; # number of nodes
 set val(x)		200.0			; # x lenght of simulation area
@@ -41,7 +41,7 @@ set val(disseminating_type)	2		; # common node disseminating type (ON DEMAND)
 set val(disseminating_interval)	5.0		; # common node disseminating interval
 
 set val(start)			100.0		; # simulation start time
-set val(rep)			2		; # no. of broadcast message sent
+set val(rep)			5		; # no. of broadcast message sent
 set val(interval)		100.0		; # time between each broadcast (sec)
 set val(stop)			[expr $val(start) + $val(rep) * $val(interval) + 1]
 
@@ -90,11 +90,11 @@ if {$val(fwd_mode) eq $KP_MODE} {
 } else { set val(bf_delay) 0.05 }
 
 ;#--- Tracing --------------
-set trace(ns)		ON
-set trace(nam)		ON
-set trace(mac)		ON
+set trace(ns)		OFF
+set trace(nam)		OFF
+set trace(mac)		OFF
 set trace(router)	OFF
-set trace(agent)	ON
+set trace(agent)	OFF
 set trace(movement)	OFF
 
 # =======================================
@@ -221,16 +221,16 @@ proc create_common_node { id } {
 	-ifqLen $val(ifqlen) \
 	-antType $val(ant) \
 	-propType $val(prop) \
-	-energyModel $val(en) \
+	#-energyModel $val(en) \
 	-phyType $val(netif) \
 	-channelType $val(chan) \
 	-topoInstance $topo \
 	-agentTrace  $trace(agent)\
 	-routerTrace $trace(router) \
 	-macTrace $trace(mac) \
-	-rxPower 0.024 \
-	-txPower 0.036 \
-	-initialEnergy $val(common_engy) \
+	#-rxPower 0.024 \
+	#-txPower 0.036 \
+	#-initialEnergy $val(common_engy) \
 	-movementTrace $trace(movement)
 	set node_($id) [$ns_ node]
 	$node_($id) random-motion 0
@@ -301,16 +301,16 @@ proc create_access_point {} {
 	-ifqLen $val(ifqlen) \
 	-antType $val(ant) \
 	-propType $val(prop) \
-	-energyModel $val(en) \
+	#-energyModel $val(en) \
 	-phyType $val(netif) \
 	-channelType $val(chan) \
 	-topoInstance $topo \
 	-agentTrace $trace(agent) \
 	-routerTrace $trace(router) \
 	-macTrace $trace(mac) \
-	-rxPower 0.5 \
-	-txPower 0.5 \
-	-initialEnergy $val(access_engy) \
+	#-rxPower 0.5 \
+	#-txPower 0.5 \
+	#-initialEnergy $val(access_engy) \
 	-movementTrace $trace(movement)
 	set node_($counter) [$ns_ node]
 	$node_($counter) random-motion 0
@@ -346,19 +346,19 @@ if { $val(bct_mode) == $BCT_ENABLE } {
     $ns_ at [expr $val(start) * 0.1] "$app_(0) add_temp_data_param 5 0"
     $ns_ at [expr $val(start) * 0.1] "$app_(0) send_request"
     $ns_ at [expr $val(start) * 0.8] "$dummy_rt stat-summary"
-    $ns_ at [expr $val(start) * 0.8] "$dummy_rt bct-summary"
+#    $ns_ at [expr $val(start) * 0.8] "$dummy_rt bct-summary"
     $ns_ at [expr $val(start) * 0.9] "$dummy_rt fwd-mode $val(fwd_mode)"
 }
 
 # send_request + stat-summary loop for batch analysis
 for {set j 0} {$j < $val(rep)} { incr j } {
 	set strtm [expr $val(start) + ($j * $val(interval)) ]
-	set endtm [expr $val(start) + (($j + 0.8) * $val(interval)) ]
+	set endtm [expr $val(start) + (($j + 0.9) * $val(interval)) ]
 	$ns_ at $strtm "$app_(0) add_temp_data_param 5 0"
 	$ns_ at $strtm "$app_(0) send_request"
 #	$ns_ at $strtm "puts \"Start=$strtm, End=$endtm \""
 	$ns_ at $endtm "$dummy_rt stat-summary"
-	$ns_ at $endtm "puts stderr \"finish round $j\""
+#	$ns_ at $endtm "puts stderr \"finish round $j\""
 }
 $ns_ at [expr $val(stop)+1] "$app_(0) stop"
 

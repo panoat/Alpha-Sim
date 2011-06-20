@@ -147,8 +147,6 @@ class AODV;
 #define BCT_DISABLE             0
 #define BCT_UNINIT              -1
 
-#define TONY_DBG
-
 /*
   Timers (Broadcast ID, Hello, Neighbor Cache, Route Cache)
  */
